@@ -1,0 +1,173 @@
+//cvCaclOpticalFlowPyrLk_demo
+//mochen
+//2011年7月26日20:23:42
+#include "StdAfx.h"
+#include <stdio.h>
+#include "cv.h"
+#include "cxcore.h"
+#include "highgui.h"
+
+#pragma comment(lib, "opencv_core231d.lib")
+#pragma comment(lib, "opencv_highgui231d.lib")
+#pragma comment(lib, "opencv_imgproc231d.lib")
+#pragma comment(lib, "opencv_calib3d231d.lib")
+#pragma comment(lib, "opencv_features2d231d.lib")
+#pragma comment(lib, "opencv_contrib231d.lib")
+#pragma comment(lib, "opencv_ml231d.lib") 
+#pragma comment(lib, "opencv_video231d.lib") 
+
+
+#if 0
+void cvCalcOpticalFlowPyrLK(
+							const CvArr* prev,
+							const CvArr* curr,
+							CvArr* prevPyr,
+							CvArr* currPyr,
+							const CvPoint2D32f* prevFeatures,
+							CvPoint2D32f* currFeatures,
+							int count,
+							CvSize winSize,
+							int level,
+							char* status,
+							float* track error,
+							CvTermCriteria criteria,
+							int flags );
+#endif
+
+const int MAX_CORNERS = 1000 ;
+
+int main(int argc,char** argv)
+{
+	while ( 1 )
+	{
+		//use webcam 
+		CvCapture* cam = cvCaptureFromCAM( CV_CAP_ANY ) ;
+		assert( NULL != cam ) ;
+
+		//get a color image 
+		IplImage* frame = cvQueryFrame(cam) ;
+
+		CvSize img_sz = cvGetSize(frame);
+		const int win_size = 10 ;
+
+		//convert the img_prev'image to grey image
+		IplImage* frame_prev = cvQueryFrame(cam) ;
+		IplImage* img_prev = cvCreateImage(img_sz,IPL_DEPTH_8U,1) ;
+		cvCvtColor( frame_prev,img_prev ,CV_BGR2GRAY);
+
+		//convert the img_curr'image to grey image
+		IplImage* frame_cur = cvQueryFrame(cam) ;
+		IplImage* img_curr = cvCreateImage(img_sz,IPL_DEPTH_8U,1) ;
+		cvCvtColor( frame_cur,img_curr ,CV_BGR2GRAY);
+
+		//create a imge to display result
+		IplImage* img_res = cvCreateImage(img_sz,IPL_DEPTH_8U,1) ;
+		for ( int y = 0 ; y < img_sz.height ; ++y )
+		{
+			uchar* ptr = (uchar*)( img_res->imageData + y * img_res->widthStep ) ;
+			for ( int x = 0 ; x <img_res->width; ++x )
+			{
+				ptr[x] = 255 ;//白色地板的图像来显示结果
+			}
+		}
+
+		//get good features 
+		IplImage* img_eig = cvCreateImage(img_sz,IPL_DEPTH_32F,1) ;
+		IplImage* img_temp = cvCreateImage(img_sz,IPL_DEPTH_32F,1) ;
+		int corner_count = MAX_CORNERS ;
+		CvPoint2D32f*  features_prev = new CvPoint2D32f[MAX_CORNERS] ;//函数的输出：为32位的角点数组
+
+		cvGoodFeaturesToTrack(
+			img_prev,
+			img_eig,
+			img_temp,
+			features_prev,
+			&corner_count,//可以返回的最大角点数目
+			0.01,//角点可接受的最小特征值（0.01*图像中最大特征值的乘积）
+			5.0,//保证返回的角点之间距离不小于5.0个像素
+			0,//不使用掩膜，选择整个图像
+			3,//计算自相关矩阵时指定的邻域
+			0,//使用Shi-Tomasi定义的角点
+			0.4//设置行列式相对权重的权重系数
+			);
+
+		cvFindCornerSubPix(
+			img_prev,
+			features_prev,//由cvGoodFeaturesToTrack得到的位置坐标
+			corner_count,//需要计算的角点数目
+			cvSize(win_size,win_size),//指定了等式产生的窗口的尺寸
+			cvSize(-1,-1),//这个区域在方程组以及自相关矩阵中不被考虑
+			cvTermCriteria(CV_TERMCRIT_EPS | CV_TERMCRIT_ITER,20,0.03)//迭代终止条件
+			);
+
+		// L-K 
+		char feature_found[ MAX_CORNERS ] ;
+		float feature_errors[ MAX_CORNERS ] ;
+
+		CvSize pyr_sz = cvSize( frame->width + 8 ,frame->height / 3 ) ;//申请存放输入图像金字塔的最小缓存
+
+		IplImage* pyr_prev = cvCreateImage(img_sz,IPL_DEPTH_32F,1) ;
+		IplImage* pyr_cur = cvCreateImage(img_sz,IPL_DEPTH_32F,1) ;
+		CvPoint2D32f*  features_cur = new CvPoint2D32f[ MAX_CORNERS ] ;
+
+		cvCalcOpticalFlowPyrLK(
+			img_prev,//初始图像
+			img_curr,//最终图像
+			pyr_prev,//申请存放输入图像pyrA金字塔的缓存
+			pyr_cur,//申请存放输入图像pyrB金字塔的缓存
+			features_prev,//存放的是用于寻找运动的点，存放features_prev的新位置
+			features_cur,//存放的是用于寻找运动的点，存放features_cur的新位置
+			corner_count,//features_prev中点的数目
+			cvSize(win_size,win_size),//定义计算局部连续运动的窗口尺寸
+			5,					 //设置构建的图像金字塔的栈的层数
+			feature_found,//数组长度为	corner_count，函数调用结束：每个元素被置0(对应点在第二幅图像未被发现)或1(对应点在第二幅图像被发现)
+			feature_errors,//表示被跟踪点的原始图像小区域与此点在第二幅图像的小区域间的差的数组
+			cvTermCriteria(CV_TERMCRIT_EPS | CV_TERMCRIT_ITER,20,0.3),//迭代终止条件
+			0
+			);
+
+		for ( int i = 0 ; i < corner_count ; i++)
+		{
+			if ( 0 == feature_found[i] || feature_errors[i] > 550 )
+			{
+				printf("error is %f \n" , feature_errors[i] ) ;
+				continue ;
+			}
+
+			printf("find it !\n") ;
+
+			CvPoint pt_prev = cvPoint( features_prev[i].x , features_prev[i].y ) ;
+			CvPoint pt_cur = cvPoint( features_cur[i].x , features_cur[i].y ) ;
+
+			cvLine( img_res,pt_prev,pt_cur,CV_RGB( 255,0,0),2 );
+		}
+
+		const char* window_prev = "img_prev" ;
+		const char* window_curr = "img_curr" ;
+		const char* window_res = "result" ;
+		cvNamedWindow(window_prev,CV_WINDOW_AUTOSIZE);
+		cvNamedWindow(window_curr,CV_WINDOW_AUTOSIZE);
+		cvNamedWindow(window_res,CV_WINDOW_AUTOSIZE);
+
+		cvShowImage( window_prev,img_prev );
+		cvShowImage( window_curr,img_curr );
+		cvShowImage( window_res,img_res );
+
+		char opt = cvWaitKey( 10000 ) ;
+		if ( 27 == opt )
+		{
+			break ;
+		}
+
+		cvReleaseCapture( &cam );
+		cvReleaseImage( &img_curr );
+		cvReleaseImage( &img_eig );
+		cvReleaseImage( &img_prev );
+		cvReleaseImage( &img_res );
+		cvReleaseImage( &img_temp );
+		cvDestroyAllWindows() ;
+	}
+
+
+	return 0 ;
+}
